@@ -249,6 +249,15 @@ from an example config file which lists all available options::
     # very easy.  Only set this if you understand what you are doing.
     #trust_authname = false
 
+    # Define google client id and client secret. You must create these at
+    # https://console.developers.google.com
+    # as well as specify the javascript origin url of your installation, 
+    #  http://yourdomain
+    # and the redirect URI, which is 
+    #  http://yourdomain/tracpath/openidconnectprocess
+    #google_client_id =
+    #google_client_secret = 
+
 
     # Authentication cookie controls.
     #

@@ -40,6 +40,10 @@ from trac.util import hex_entropy
 from openid.store.sqlstore import MySQLStore, PostgreSQLStore, SQLiteStore
 from openid.store.memstore import MemoryStore
 
+##JC
+##import oic.oic.consumer
+
+
 from openid.consumer import consumer
 from openid.extensions import sreg, pape, ax
 from openid import oidutil
@@ -57,6 +61,19 @@ try:
 except ImportError:
     import simplejson as json           # python < 2.6
 
+## JC
+from oic.oic import Client
+from oic.utils.authn.client import CLIENT_AUTHN_METHOD
+
+import hashlib
+import hmac
+from oic.oauth2 import rndstr
+from oic.utils.http_util import Redirect
+
+##session = dict()
+import logging
+
+
 class OpenIdLogger:
     """ Log all OpenID messages to debug. """
 
@@ -67,6 +84,14 @@ class OpenIdLogger:
         self.env.log.debug(message)
 
 class AuthOpenIdPlugin(Component):
+
+    logging.getLogger().setLevel(logging.DEBUG)
+    fh = logging.FileHandler('oidc2.log')
+    fh.setLevel(logging.DEBUG)
+##from oic.oauth2 import logger
+##oic.oauth2.logger.addHandler(fh)
+    logger = logging.getLogger('oic')
+    logger.addHandler(fh)
 
     openid_session_key = 'openid_session_data'
     openid_session_identity_url_key = 'openid_session_identity_url_data'
@@ -80,6 +105,7 @@ class AuthOpenIdPlugin(Component):
 
     implements(INavigationContributor, IRequestHandler, ITemplateProvider, IAuthenticator, IEnvironmentSetupParticipant,
         IPermissionGroupProvider)
+
 
     # Do not declare options in the [trac] section.  We should not
     # be creating new declared options there, and we should not be
@@ -203,6 +229,13 @@ class AuthOpenIdPlugin(Component):
             To use this option you must have python-openid-teams installed.
             """)
 
+    # JC
+    google_client_id = Option('openid', 'google_client_id',  '',
+            """ Google client ID from developers console. """)
+
+    google_client_secret = Option('openid', 'google_client_secret',  '',
+            """ Google client secret from developers console. """)
+
 
 
     def _get_masked_address(self, address):
@@ -317,13 +350,15 @@ class AuthOpenIdPlugin(Component):
     # IRequestHandler methods
 
     def match_request(self, req):
-        return re.match('/(openidlogin|openidverify|openidprocess|openidlogout)\??.*', req.path_info)
+        return re.match('/(openidlogin|openidverify|openidprocess|openidconnectprocess|openidlogout)\??.*', req.path_info)
 
     def process_request(self, req):
         if req.path_info.startswith('/openidlogin'):
             return self._do_login(req)
         elif req.path_info.startswith('/openidverify'):
             return self._do_verify(req)
+        elif req.path_info.startswith('/openidconnectprocess'):
+            return self._do_oidcprocess(req)
         elif req.path_info.startswith('/openidprocess'):
             return self._do_process(req)
         elif req.path_info.startswith('/openidlogout'):
@@ -335,6 +370,7 @@ class AuthOpenIdPlugin(Component):
         if referer and not (referer == req.base_url or referer.startswith(req.base_url.rstrip('/')+'/')):
             # only redirect to referer if it is from the same site
             referer = None
+        self.env.log.debug('JC - referer %s' % referer)
         if referer:
            req.session['oid.referer'] = referer
         if self.default_openid:
@@ -342,6 +378,8 @@ class AuthOpenIdPlugin(Component):
            return self._do_verify(req)
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
+	#add_script(req, 'https://apis.google.com/js/client:platform.js')
+	add_script(req, 'authopenid/js/gwt-oauth2.js')
         return 'openidlogin.html', {
             'images': req.href.chrome('authopenid/images') + '/',
             'action': req.href.openidverify(),
@@ -385,6 +423,14 @@ class AuthOpenIdPlugin(Component):
             s['id'] = req.session.sid
         store = self._getStore(db)
 
+        self.env.log.debug('JC - get_consumer s: %s' % s)
+
+	## JC
+        ##self.env.log.debug('JC - get_consumer self.oidc: %s' % self.oidc)
+	##if self.oidc:
+		##return oic.oic.consumer.Consumer(store, None), s
+	##else:
+        	##return consumer.Consumer(s, store), s
         return consumer.Consumer(s, store), s
 
     def _do_verify(self, req):
@@ -395,6 +441,8 @@ class AuthOpenIdPlugin(Component):
         openid_url = req.args.get('openid_identifier')
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
+	#add_script(req, 'https://apis.google.com/js/client:platform.js')
+	add_script(req, 'authopenid/js/gwt-oauth2.js')
 
         if not openid_url:
             return 'openidlogin.html', {
@@ -413,13 +461,175 @@ class AuthOpenIdPlugin(Component):
                 }, None
 
         immediate = 'immediate' in req.args
+        #if openid_url.find('accounts.google.com') > -1 :
+        if openid_url.find('oauth2') > -1 :
+                # Openid Connect
+            	self.env.log.debug('JC beginning OpenID Connect section.')
+                self.env.log.debug('JC openid_url: %s' % openid_url)
 
-        db = self.env.get_db_cnx()
-        oidconsumer, oidsession = self._get_consumer(req, db)
-        try:
+		# Need to differentiate oid2 and oidc in here. 
+		self.oidc = True
+
+		# This is a hack. Use oidconsumer, oidsession to store state.
+		# These are from OpenId 2.0
+		# Also use c = Client() to provide a Client from OpenID Connect
+		# The trick is to save/restore in old format, then
+		# create a new Client in new format and populate data from old format
+         	db = self.env.get_db_cnx()
+         	oidconsumer, oidsession = self._get_consumer(req, db)
+		#c = Client()
+		c = Client(client_authn_method=CLIENT_AUTHN_METHOD)
+
+		## Google doesn't support webfinger - have to hardcode
+		##uid = 'cs373johncigas@gmail.com'
+		##issuer = c.discover(uid)
+		issuer = 'https://accounts.google.com'
+		## Google doesn't use https:// on it's issuer string
+                c.allow["issuer_mismatch"] = True
+		provider_info = c.provider_config(issuer)
+
+		## Shouldn't be necessary
+                ##c.provider_info = provider_info
+		
+            	self.env.log.debug('JC keyjar %s.' % c.keyjar.dump())
+            	self.env.log.debug('JC keyjar initial issuers %s.' % c.keyjar.issuer_keys)
+            	self.env.log.debug('JC provider_info %s.' % provider_info)
+            	self.env.log.debug('JC c.provider_info %s.' % c.provider_info)
+
+		##self._commit_oidsession(oidsession, req)
+
+
+		c.redirect_uris = ['http://ticket.cigas.net/trac2/openidconnectprocess']
+		c.contacts = ["cigas@cigas.net", "Foo@bar.com"]
+
+		from oic.oic.message import RegistrationResponse
+
+		info = {}
+		info['client_id'] = self.google_client_id
+		info['client_secret'] = self.google_client_secret
+		client_reg = RegistrationResponse(**info)
+		c.client_info = client_reg
+		## this should set client_id and client_secret
+		c.store_registration_info(client_reg)
+
+                self.env.log.debug('JC client id: %s' % c.client_id)
+                self.env.log.debug('JC client_info id: %s' % c.client_info['client_id'])
+                self.env.log.debug('JC client_info id: %s' % c.registration_response['client_id'])
+
+		##session["state"] = rndstr()
+		##session["nonce"] = rndstr()
+		oidsession["state"] = rndstr()
+		args = {
+			"client_id" : c.client_info['client_id'],
+			"response_type" : "code",
+			"scope" : ["openid", "email"],
+			"redirect_uri" : c.redirect_uris[0]
+		}
+
+			## Google doesn't need/like? nonce
+			##"nonce" : session["nonce"],
+			##"login_hint" : "cs373johncigas",
+			## Try without profile - I really don't want.
+			## "scope" : ["openid", "email", "profile"],
+			## "scope" : ["openid", "email"],
+			##"client_id" : c.client_id,
+			##"redirect_uri" : c.redirect_uris[0],
+			##"state" : session["state"]
+
+		result = c.do_authorization_request(state=oidsession["state"], request_args=args)
+		url, body, ht_args, cs1 = c.authorization_request_info(request_args=args)
+                self.env.log.debug('JC client_request url: %s ' % url)
+                self.env.log.debug('JC client_request ht_args: %s ' % ht_args)
+                ##self.env.log.debug('JC client_request id: %s %s %s %s' % c.authorization_request_info(request_args=args) )
+
+                self.env.log.debug('JC result status: %s' % result.status_code )
+                self.env.log.debug('JC result headers[location]: %s' % result.headers["location"] )
+
+
+                self.env.log.debug('JC grant: %s' % c.grant)
+                self.env.log.debug('JC Before Redirect req.args: %s' % req.args)
+                self.env.log.debug('JC c: %s' %  dict(c.__dict__))
+		##oidsession["saved_client"] = c
+		oidsession["saved_prov_info"] = c.provider_info
+		oidsession["saved_reg_resp"] = c.registration_response
+		oidsession["saved_client_info"] = c.client_info
+		oidsession["saved_keyjar"] = c.keyjar
+
+                self._commit_oidsession(oidsession, req)
+            	self.env.log.debug('JC keyjar before redirect issuers %s.' % c.keyjar.issuer_keys)
+            	while result.status_code == 302 or result.status_code == 301:
+		    req.redirect(url)
+
+                self.env.log.debug('JC Should not get here, since after redirect' )
+
+
+
+        	resp = c.complete(_state)
+        	print resp
+        	assert resp.type() == "AccessTokenResponse"
+        	print resp.keys()
+        	assert _eq(resp.keys(), ['token_type', 'state', 'access_token',
+                                 'scope', 'expires_in', 'refresh_token'])
+
+      		assert resp["state"] == _state
+
+		## Instead of this return, which uses someone else's library,
+		## Use the URL above but put in the autosubmit form.
+		## ??? Do I need all the trust infor - I don't think so.
+		##return resp(environ, start_response)
+
+                # Let the sreg policy be configurable
+                sreg_opt = []
+                sreg_req = []
+                sreg_fields = ['fullname', 'email']
+                if self.sreg_required:
+                    sreg_req = sreg_fields
+                else:
+                    sreg_opt = sreg_fields
+                if self.use_nickname_as_authname:
+                    sreg_req.append('nickname')
+                sreg_request = sreg.SRegRequest(optional=sreg_opt, required=sreg_req)
+                request.addExtension(sreg_request)
+
+                ax_request = ax.FetchRequest()
+                for alias, uri in self.openid_ax_attrs.items():
+                    attr_info = ax.AttrInfo(uri, required=True, alias=alias)
+                    ax_request.add(attr_info)
+                request.addExtension(ax_request)
+
+                #trust_root = self._get_trust_root(req)
+                #if self.absolute_trust_root:
+                    #trust_root += '/'
+                #else:
+                    #trust_root += req.href()
+                #return_to = self._get_trust_root(req) + req.href.openidprocess()
+                if request.shouldSendRedirect():
+                    redirect_url = request.redirectURL(
+                        trust_root, return_to, immediate=immediate)
+                    self.env.log.debug('Redirecting to: %s' % redirect_url)
+                    req.redirect(redirect_url)
+                else:
+                    form_html = request.formMarkup(
+                        form_tag_attrs={'id':'openid_message'},
+                        immediate=immediate)
+
+                    return 'autosubmitform.html', {
+                        'id': 'openid_message',
+                        'form': form_html
+                       }, None
+
+
+        else:
+         # OpenID 2.0
+
+         self.oidc = False
+
+         db = self.env.get_db_cnx()
+         oidconsumer, oidsession = self._get_consumer(req, db)
+         try:
             self.env.log.debug('beginning OpenID authentication.')
             request = oidconsumer.begin(openid_url)
-        except consumer.DiscoveryFailure, exc:
+         except consumer.DiscoveryFailure, exc:
             fetch_error_string = 'Error in discovery: %s' % (
                 cgi.escape(str(exc[0])))
             return 'openidlogin.html', {
@@ -436,7 +646,7 @@ class AuthOpenIdPlugin(Component):
                 'custom_provider_image': self.custom_provider_image,
                 'custom_provider_size': self.custom_provider_size,
                 }, None
-        else:
+         else:
             if request is None:
                 msg = 'No OpenID services found for <code>%s</code>' % (
                     cgi.escape(openid_url),)
@@ -460,6 +670,11 @@ class AuthOpenIdPlugin(Component):
                 # Here we find out the identity server that will verify the
                 # user's identity, and get a token that allows us to
                 # communicate securely with the identity server.
+
+		# Need to differentiate oid2 and oidc in here. 
+		# Oidc needs registration information - just hardcode for google now.
+
+                self.env.log.debug('openid_url: %s' % openid_url)
 
                 requested_policies = []
                 if self.pape_method:
@@ -519,6 +734,8 @@ class AuthOpenIdPlugin(Component):
                         form_tag_attrs={'id':'openid_message'},
                         immediate=immediate)
 
+                    self.env.log.debug('JC form_html: %s' % form_html)
+
                     return 'autosubmitform.html', {
                         'id': 'openid_message',
                         'form': form_html
@@ -556,18 +773,350 @@ class AuthOpenIdPlugin(Component):
                 ', '.join("'%s'" % user for (user,) in rows))
         return rows[0][0]
 
-    def _do_process(self, req):
+    def _do_oidcprocess(self, req):
+        self.env.log.debug('JC starting do_oidcprocess')
+        self.env.log.debug('JC req.args %s' % req.args )
         """Handle the redirect from the OpenID server.
         """
         db = self.env.get_db_cnx()
         oidconsumer, oidsession = self._get_consumer(req, db)
 
+
+	## How to get actual result now???
+	## req.args has the response, but
+	## How to get copy of client - it's not oidconsumer
+	from oic.oic.message import AuthorizationResponse
+	##aresp = oidconsumer.parse_response(AuthorizationResponse, info=req.args, sformat="urlencoded")
+
+	### Can't do this for OpenID2.0 !?!?!
+	## Still have to populate this...
+	##c = Client()
+	c = Client(client_authn_method=CLIENT_AUTHN_METHOD)
+	###c = oidsession["saved_client"]
+	c.provider_info = oidsession["saved_prov_info"] 
+	c.registration_response = oidsession["saved_reg_resp"]
+	c.store_registration_info(c.registration_response)
+	c.client_info = oidsession["saved_client_info"]
+	c.keyjar = oidsession["saved_keyjar"]
+
+        self.env.log.debug('JC keyjar after redirect issuers %s.' % c.keyjar.issuer_keys)
+	c.token_endpoint = "https://www.googleapis.com/oauth2/v3/token"
+
+	aresp = c.parse_response(AuthorizationResponse, info=json.dumps(req.args), sformat="json")
+       	self.env.log.debug('JC aresp %s' % aresp )
+       	self.env.log.debug('JC aresp[code] %s' % aresp['code'] )
+       	self.env.log.debug('JC aresp[state] %s' % aresp['state'] )
+	assert aresp['state'] == oidsession['state']
+
+
+	args = {
+    		"code": aresp["code"],
+    		"redirect_uri": 'http://ticket.cigas.net/trac2/openidconnectprocess',
+    		"client_id": c.client_id,
+    		"client_secret": c.client_secret,
+		"grant_type" : "authorization_code"
+		}
+        ###pcr = None
+       	###r = c.http_request('https://www.googleapis.com/oauth2/v2/certs')
+       	###self.env.log.debug('JC r %s' % r )
+       	###self.env.log.debug('JC r.status %s   r.text %s' % (r.status_code, r.text) )
+       	###if r.status_code == 200:
+       		#####pcr = c.response_cls().from_json(r.text)
+		###pcr = json.loads(r.text)
+       	###self.env.log.debug('JC pcr %s' % pcr )
+		
+	info = c.do_access_token_request(scope=["openid","email"],
+                                     state=aresp["state"],
+                                     request_args=args,
+                                     authn_method="client_secret_post"
+		## Put kwargs with key= or keys, get keys from google
+                                      )
+                                      ##authn_method="client_secret_post"
+       	self.env.log.debug('JC info %s' % info )
+	c.userinfo_endpoint = "https://www.googleapis.com/oauth2/v3/userinfo"
+                ##user_info=c.do_user_info_request(state=aresp["state"])
+		## It was REALLY important to specify GET
+        user_info=c.do_user_info_request(state=aresp["state"], scope=["openid","email"],method="GET")
+       	self.env.log.debug('JC user_info %s' % user_info )
+               
+## OpenID 2.0 code below - have to delete and fix
+
         # Ask the library to check the response that the server sent
         # us.  Status is a code indicating the response type. info is
         # either None or a string containing more information about
         # the return type.
-        current_url = req.abs_href(req.path_info)
-        info = oidconsumer.complete(req.args,current_url)
+        ##current_url = req.abs_href(req.path_info)
+	## This is the call for OpenID 2.0 - 
+       	##info = oidconsumer.complete(req.args,current_url)
+
+        css_class = 'error'
+	if user_info.type() == "ErrorResponse":
+        ##if info.status == consumer.FAILURE and info.identity_url:
+            # In the case of failure, if info is non-None, it is the
+            # URL that we were verifying. We include it in the error
+            # message to help the user figure out what happened.
+            fmt = "Error %s Description: %s"
+            message = fmt % (user_info.error,
+                             user_info.error_description)
+        ##elif info.status == consumer.SUCCESS:
+        elif user_info.type() == "OpenIDSchema":
+            # Success means that the transaction completed without
+            # error. If info is None, it means that the user cancelled
+            # the verification.
+            css_class = 'alert'
+
+            session_attr = {}           # attributes for new "user"
+
+            # This is a successful verification attempt. If this
+            # was a real application, we would do our login,
+            # comment posting, etc. here.
+            fmt = "You have successfully verified %s as your identity."
+            message = fmt % (user_info["sub"],)
+            ##remote_user = info.identity_url
+
+            ##sreg_info = sreg.SRegResponse.fromSuccessResponse(info) or {}
+
+            ##ax_response = ax.FetchResponse.fromSuccessResponse(info)
+            ##ax_info = {}
+            ##if ax_response:
+                ##for alias, uri in self.openid_ax_attrs.items():
+                    ##values = ax_response.data.get(uri,[])
+                    ##if values:
+                        ##ax_info[alias] = values[0]
+##
+            ##email = (ax_info.get('email')
+                     ##or ax_info.get('email2')
+                     ##or sreg_info.get('email'))
+	    email = user_info["email"]
+	    fullname = user_info["name"]
+
+            ##fullname = (
+                ##' '.join(filter(None, map(ax_info.get,
+                                          ##('firstname', 'lastname'))))
+                ##or sreg_info.get('fullname')
+                ##or (email and email.split('@',1)[0].replace('.', ' ').title()))
+
+            ##nickname = sreg_info.get('nickname')
+
+	    #### HACK  to save a lot of editing
+	    info.identity_url = user_info["sub"]
+
+	    allowed = True
+            if allowed:
+                cookie = hex_entropy()
+                cookie_lifetime = self.trac_auth_cookie_lifetime
+
+                req.outcookie['trac_auth'] = cookie
+                req.outcookie['trac_auth']['path'] = req.href()
+                if cookie_lifetime > 0:
+                    req.outcookie['trac_auth']['expires'] = cookie_lifetime
+
+                ##session_attr[self.openid_session_identity_url_key] = info.identity_url
+                session_attr[self.openid_session_identity_url_key] = user_info["sub"]
+                if email:
+                    session_attr['email'] = email
+                if fullname:
+                    session_attr['name'] = fullname
+
+                self._commit_oidsession(oidsession, req)
+
+                # First look for an existing authenticated session with
+                # matching identity_url.
+                self.env.log.debug('Checking URL: %s' % info.identity_url)
+                authname_for_identity_url = self.get_user(info.identity_url)
+                if authname_for_identity_url:
+                    authname = authname_for_identity_url
+                    ds = DetachedSession(self.env, authname)
+                    # The user already exists, update team membership
+                    # XXX: Should also update name and/or email? (This would
+                    # be an API change.)
+                    for name in ['openid.teams']:
+                        if name in session_attr:
+                            ds[name] = session_attr[name]
+                        elif name in ds:
+                            del ds[name]
+                    ds.save()
+                else:
+                    # New identity URL -> create new authname/user.
+                    if self.check_list and self.check_list_username:
+                        authname = cl_username
+                    elif self.use_nickname_as_authname and nickname:
+                        authname = nickname
+                    elif session_attr.get('name'):
+                        authname = session_attr['name']
+                        if self.combined_username:
+                            authname = '%s <%s>' % (authname, remote_user)
+                    else:
+                        authname = remote_user
+
+                    # Possibly lower-case the authname.
+                    if self.lowercase_authname:
+                        authname = authname.lower()
+
+                    if self.trust_authname:
+                        ds = DetachedSession(self.env, authname)
+                    else:
+                        # Make authname unique in case of collisions
+                        def authnames(base):
+                            yield base
+                            for attempt in itertools.count(2):
+                                yield "%s (%d)" % (base, attempt)
+
+                        users_and_groups_with_permissions = set(
+                            user
+                            for user, perm
+                            in PermissionSystem(self.env).get_all_permissions())
+
+                        for authname in authnames(authname):
+                            ds = DetachedSession(self.env, authname)
+                            # At least in 0.12.2, this means no session exists.
+                            no_session_exists = ds.last_visit == 0 and len(ds) == 0
+                            no_permissions_defined = authname not in users_and_groups_with_permissions
+                            if (no_session_exists and no_permissions_defined):
+                                # name is free :-)
+                                break
+                        # Set attributes for new user on the
+                        # current anonymous session.  It will be promoted to
+                        # the new authenticated session on the next request
+                        # (by Session.__init__).
+                        #
+                        # NB: avoid dict.update here to ensure that
+                        # DetachedSession.__getitem__ gets a chance to
+                        # normalize values
+                        for name, value in session_attr.items():
+                            req.session[name] = value
+                        self.env.log.info("Created new user '%s' for "
+                            "OpenID identifier %s", authname, info.identity_url)
+
+                req.authname = authname
+
+                db = self.env.get_db_cnx()
+                cursor = db.cursor()
+                cursor.execute("INSERT INTO auth_cookie (cookie,name,ipnr,time) "
+                               "VALUES (%s, %s, %s, %s)", (cookie, authname,
+                               self._get_masked_address(req.remote_addr), int(time.time())))
+                db.commit()
+
+		self.env.log.debug("oid.referer %s" % req.session.get('oid.referer'))
+		self.env.log.debug("abs.href %s" % self.env.abs_href())
+                req.redirect(req.session.get('oid.referer') or self.env.abs_href())
+            else:
+                message = 'You are not allowed here.'
+        elif info.status == consumer.CANCEL:
+            # cancelled
+            message = 'Verification cancelled'
+        elif info.status == consumer.SETUP_NEEDED:
+            if info.setup_url:
+                message = '<a href=%s>Setup needed</a>' % (
+                    quoteattr(info.setup_url),)
+            else:
+                # This means auth didn't succeed, but you're welcome to try
+                # non-immediate mode.
+                message = 'Setup needed'
+        else:
+            # Either we don't understand the code or there is no
+            # openid_url included with the error. Give a generic
+            # failure message. The library should supply debug
+            # information in a log.
+            message = 'Verification failed.'
+
+        self._commit_oidsession(oidsession, req)
+
+        add_stylesheet(req, 'authopenid/css/openid.css')
+        add_script(req, 'authopenid/js/openid-jquery.js')
+	#add_script(req, 'https://apis.google.com/js/client:platform.js')
+	add_script(req, 'authopenid/js/gwt-oauth2.js')
+        return 'openidlogin.html', {
+            'images': req.href.chrome('authopenid/images') + '/',
+            'action': req.href.openidverify(),
+            'message': message,
+            'signup': self.signup_link,
+            'whatis': self.whatis_link,
+            'css_class': css_class,
+            'providers_regexp': self.providers_regexp,
+            'custom_provider_name': self.custom_provider_name,
+            'custom_provider_label': self.custom_provider_label,
+            'custom_provider_url': self.custom_provider_url,
+            'custom_provider_image': self.custom_provider_image,
+            'custom_provider_size': self.custom_provider_size,
+            }, None
+
+
+    def _do_process(self, req):
+        self.env.log.debug('JC starting do_process')
+        self.env.log.debug('JC req.args %s' % req.args )
+        """Handle the redirect from the OpenID server.
+        """
+        db = self.env.get_db_cnx()
+        oidconsumer, oidsession = self._get_consumer(req, db)
+
+
+	## How to get actual result now???
+	## req.args has the response, but
+	## How to get copy of client - it's not oidconsumer
+	from oic.oic.message import AuthorizationResponse
+	##aresp = oidconsumer.parse_response(AuthorizationResponse, info=req.args, sformat="urlencoded")
+
+	### Can't do this for OpenID2.0 !?!?!
+	## Still have to populate this...
+	##c = Client()
+	c = Client(client_authn_method=CLIENT_AUTHN_METHOD)
+	###c = oidsession["saved_client"]
+
+        self.env.log.debug('JC keyjar after redirect issuers %s.' % c.keyjar.issuer_keys)
+	if self.oidc:
+		c.provider_info = oidsession["saved_prov_info"] 
+		c.registration_response = oidsession["saved_reg_resp"]
+		c.store_registration_info(c.registration_response)
+		c.client_info = oidsession["saved_client_info"]
+		c.keyjar = oidsession["saved_keyjar"]
+		c.token_endpoint = "https://www.googleapis.com/oauth2/v3/token"
+
+		aresp = c.parse_response(AuthorizationResponse, info=json.dumps(req.args), sformat="json")
+        	self.env.log.debug('JC aresp %s' % aresp )
+        	self.env.log.debug('JC aresp[code] %s' % aresp['code'] )
+        	self.env.log.debug('JC aresp[state] %s' % aresp['state'] )
+		assert aresp['state'] == oidsession['state']
+
+
+		args = {
+    			"code": aresp["code"],
+    			"redirect_uri": 'http://ticket.cigas.net/trac2/openidprocess',
+    			"client_id": c.client_id,
+    			"client_secret": c.client_secret,
+			"grant_type" : "authorization_code"
+		}
+        	pcr = None
+        	r = c.http_request('https://www.googleapis.com/oauth2/v2/certs')
+        	self.env.log.debug('JC r %s' % r )
+        	self.env.log.debug('JC r.status %s   r.text %s' % (r.status_code, r.text) )
+        	if r.status_code == 200:
+            		##pcr = c.response_cls().from_json(r.text)
+			pcr = json.loads(r.text)
+        	self.env.log.debug('JC pcr %s' % pcr )
+		
+		info = c.do_access_token_request(scope=["openid","email"],
+                                      state=aresp["state"],
+                                      request_args=args,
+                                      authn_method="client_secret_post"
+		## Put kwargs with key= or keys, get keys from google
+                                      )
+                                      ##authn_method="client_secret_post"
+        	self.env.log.debug('JC info %s' % info )
+		c.userinfo_endpoint = "https://www.googleapis.com/oauth2/v3/userinfo"
+                ##user_info=c.do_user_info_request(state=aresp["state"])
+		## It was REALLY important to specify GET
+                user_info=c.do_user_info_request(state=aresp["state"], scope=["openid","email"],method="GET")
+        	self.env.log.debug('JC user_info %s' % user_info )
+               
+	else:
+        # Ask the library to check the response that the server sent
+        # us.  Status is a code indicating the response type. info is
+        # either None or a string containing more information about
+        # the return type.
+        	current_url = req.abs_href(req.path_info)
+		## This is the call for OpenID 2.0 - 
+        	info = oidconsumer.complete(req.args,current_url)
 
         css_class = 'error'
         if info.status == consumer.FAILURE and info.identity_url:
@@ -798,6 +1347,8 @@ class AuthOpenIdPlugin(Component):
 
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
+	#add_script(req, 'https://apis.google.com/js/client:platform.js')
+	add_script(req, 'authopenid/js/gwt-oauth2.js')
         return 'openidlogin.html', {
             'images': req.href.chrome('authopenid/images') + '/',
             'action': req.href.openidverify(),

@@ -10,6 +10,10 @@ var providers_large = {
         name: 'Google',
         url: 'https://www.google.com/accounts/o8/id'
     },
+    google2: {
+        name: 'Google2',
+        url: 'https://accounts.google.com/o/oauth2/auth'
+    },
     yahoo: {
         name: 'Yahoo',
         url: 'http://yahoo.com/'

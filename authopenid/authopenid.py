@@ -64,13 +64,10 @@ except ImportError:
 ## JC
 from oic.oic import Client
 from oic.utils.authn.client import CLIENT_AUTHN_METHOD
-
+from oic.oic.message import RegistrationResponse
 import hashlib
 import hmac
 from oic.oauth2 import rndstr
-from oic.utils.http_util import Redirect
-
-##session = dict()
 import logging
 
 
@@ -85,13 +82,12 @@ class OpenIdLogger:
 
 class AuthOpenIdPlugin(Component):
 
-    logging.getLogger().setLevel(logging.DEBUG)
-    fh = logging.FileHandler('oidc2.log')
-    fh.setLevel(logging.DEBUG)
-##from oic.oauth2 import logger
-##oic.oauth2.logger.addHandler(fh)
-    logger = logging.getLogger('oic')
-    logger.addHandler(fh)
+    # For debugging oidc library
+    #logging.getLogger().setLevel(logging.DEBUG)
+    #fh = logging.FileHandler('oidc2.log')
+    #fh.setLevel(logging.DEBUG)
+    #logger = logging.getLogger('oic')
+    #logger.addHandler(fh)
 
     openid_session_key = 'openid_session_data'
     openid_session_identity_url_key = 'openid_session_identity_url_data'
@@ -378,12 +374,10 @@ class AuthOpenIdPlugin(Component):
            return self._do_verify(req)
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
-	#add_script(req, 'https://apis.google.com/js/client:platform.js')
-	add_script(req, 'authopenid/js/gwt-oauth2.js')
         return 'openidlogin.html', {
             'images': req.href.chrome('authopenid/images') + '/',
             'action': req.href.openidverify(),
-            'message': 'Login using OpenID.',
+            'message': 'Login using OpenID. Google has switched to OpenID Connect. If that option does not work, use Yahoo instead and file a meaningful ticket to help us fix it.',
             'signup': self.signup_link,
             'whatis': self.whatis_link,
             'css_class': 'error',
@@ -441,8 +435,6 @@ class AuthOpenIdPlugin(Component):
         openid_url = req.args.get('openid_identifier')
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
-	#add_script(req, 'https://apis.google.com/js/client:platform.js')
-	add_script(req, 'authopenid/js/gwt-oauth2.js')
 
         if not openid_url:
             return 'openidlogin.html', {
@@ -461,63 +453,58 @@ class AuthOpenIdPlugin(Component):
                 }, None
 
         immediate = 'immediate' in req.args
-        #if openid_url.find('accounts.google.com') > -1 :
-        if openid_url.find('oauth2') > -1 :
-                # Openid Connect
-            	self.env.log.debug('JC beginning OpenID Connect section.')
-                self.env.log.debug('JC openid_url: %s' % openid_url)
+        if openid_url == 'https://accounts.google.com' :
+                # Google Openid Connect
+                self.env.log.debug('JC beginning OpenID Connect openid_url: %s' % openid_url)
 
-		# Need to differentiate oid2 and oidc in here. 
-		self.oidc = True
+		# This is a hack. Use oidconsumer, oidsession to store state, which are from OpenID 2 library,
+		# then use c = Client() to provide a Client from OpenID Connect
+		# The trick is to save/restore client values in the session state, then create a new
+                # client after the redirect, then restore its relevant values.
 
-		# This is a hack. Use oidconsumer, oidsession to store state.
-		# These are from OpenId 2.0
-		# Also use c = Client() to provide a Client from OpenID Connect
-		# The trick is to save/restore in old format, then
-		# create a new Client in new format and populate data from old format
          	db = self.env.get_db_cnx()
          	oidconsumer, oidsession = self._get_consumer(req, db)
-		#c = Client()
+
 		c = Client(client_authn_method=CLIENT_AUTHN_METHOD)
 
-		## Google doesn't support webfinger - have to hardcode
-		##uid = 'cs373johncigas@gmail.com'
+		# Differentiate oid2 and oidc - not currently used 
+		#self.oidc = True
+
+		# Do not see SREG or group support in OIDC...
+
+
+
+		## Google doesn't support webfinger - just use 
+		##uid = 'billgates@gmail.com'
 		##issuer = c.discover(uid)
-		issuer = 'https://accounts.google.com'
+
+		#issuer = 'https://accounts.google.com'
+		issuer = openid_url
 		## Google doesn't use https:// on it's issuer string
                 c.allow["issuer_mismatch"] = True
+		
+		# calling c.provider_config() also sets c.provider_info
 		provider_info = c.provider_config(issuer)
 
-		## Shouldn't be necessary
-                ##c.provider_info = provider_info
-		
-            	self.env.log.debug('JC keyjar %s.' % c.keyjar.dump())
-            	self.env.log.debug('JC keyjar initial issuers %s.' % c.keyjar.issuer_keys)
-            	self.env.log.debug('JC provider_info %s.' % provider_info)
-            	self.env.log.debug('JC c.provider_info %s.' % c.provider_info)
-
-		##self._commit_oidsession(oidsession, req)
 
 
-		c.redirect_uris = ['http://ticket.cigas.net/trac2/openidconnectprocess']
-		c.contacts = ["cigas@cigas.net", "Foo@bar.com"]
-
-		from oic.oic.message import RegistrationResponse
-
+		# Not sure which fields are necessary, just set them all for now.
 		info = {}
 		info['client_id'] = self.google_client_id
 		info['client_secret'] = self.google_client_secret
 		client_reg = RegistrationResponse(**info)
 		c.client_info = client_reg
-		## this should set client_id and client_secret
+		## calling c.store_registration() sets c.client_id and c.client_secret
 		c.store_registration_info(client_reg)
 
-                self.env.log.debug('JC client id: %s' % c.client_id)
-                self.env.log.debug('JC client_info id: %s' % c.client_info['client_id'])
-                self.env.log.debug('JC client_info id: %s' % c.registration_response['client_id'])
+		# Get redirect address
+                trust_root = self._get_trust_root(req)
+                if self.absolute_trust_root:
+                    trust_root += '/'
+                else:
+                    trust_root += req.href()
+		c.redirect_uris = [self._get_trust_root(req) + req.href.openidconnectprocess()]
 
-		##session["state"] = rndstr()
-		##session["nonce"] = rndstr()
 		oidsession["state"] = rndstr()
 		args = {
 			"client_id" : c.client_info['client_id'],
@@ -526,103 +513,36 @@ class AuthOpenIdPlugin(Component):
 			"redirect_uri" : c.redirect_uris[0]
 		}
 
-			## Google doesn't need/like? nonce
-			##"nonce" : session["nonce"],
-			##"login_hint" : "cs373johncigas",
-			## Try without profile - I really don't want.
-			## "scope" : ["openid", "email", "profile"],
-			## "scope" : ["openid", "email"],
-			##"client_id" : c.client_id,
-			##"redirect_uri" : c.redirect_uris[0],
-			##"state" : session["state"]
-
 		result = c.do_authorization_request(state=oidsession["state"], request_args=args)
+                self.env.log.debug('JC result status: %s' % result.status_code )
+
 		url, body, ht_args, cs1 = c.authorization_request_info(request_args=args)
                 self.env.log.debug('JC client_request url: %s ' % url)
-                self.env.log.debug('JC client_request ht_args: %s ' % ht_args)
-                ##self.env.log.debug('JC client_request id: %s %s %s %s' % c.authorization_request_info(request_args=args) )
 
-                self.env.log.debug('JC result status: %s' % result.status_code )
-                self.env.log.debug('JC result headers[location]: %s' % result.headers["location"] )
+		# Save state of client c to be reconstructed after redirect.
+		# There's really no reason to  use oidsession since this information should be constant between
+		# all clients on this machine. Perhaps global varibles would be better.
 
-
-                self.env.log.debug('JC grant: %s' % c.grant)
-                self.env.log.debug('JC Before Redirect req.args: %s' % req.args)
-                self.env.log.debug('JC c: %s' %  dict(c.__dict__))
-		##oidsession["saved_client"] = c
+		# It would be nice to just say
+		#   oidsession['saved_client'] = c
+		# but this generate 'TypeError: can't pickle lock objects'
 		oidsession["saved_prov_info"] = c.provider_info
 		oidsession["saved_reg_resp"] = c.registration_response
 		oidsession["saved_client_info"] = c.client_info
 		oidsession["saved_keyjar"] = c.keyjar
+		oidsession['saved_redirect_uris'] = c.redirect_uris
 
                 self._commit_oidsession(oidsession, req)
-            	self.env.log.debug('JC keyjar before redirect issuers %s.' % c.keyjar.issuer_keys)
             	while result.status_code == 302 or result.status_code == 301:
 		    req.redirect(url)
 
                 self.env.log.debug('JC Should not get here, since after redirect' )
 
-
-
-        	resp = c.complete(_state)
-        	print resp
-        	assert resp.type() == "AccessTokenResponse"
-        	print resp.keys()
-        	assert _eq(resp.keys(), ['token_type', 'state', 'access_token',
-                                 'scope', 'expires_in', 'refresh_token'])
-
-      		assert resp["state"] == _state
-
-		## Instead of this return, which uses someone else's library,
-		## Use the URL above but put in the autosubmit form.
-		## ??? Do I need all the trust infor - I don't think so.
-		##return resp(environ, start_response)
-
-                # Let the sreg policy be configurable
-                sreg_opt = []
-                sreg_req = []
-                sreg_fields = ['fullname', 'email']
-                if self.sreg_required:
-                    sreg_req = sreg_fields
-                else:
-                    sreg_opt = sreg_fields
-                if self.use_nickname_as_authname:
-                    sreg_req.append('nickname')
-                sreg_request = sreg.SRegRequest(optional=sreg_opt, required=sreg_req)
-                request.addExtension(sreg_request)
-
-                ax_request = ax.FetchRequest()
-                for alias, uri in self.openid_ax_attrs.items():
-                    attr_info = ax.AttrInfo(uri, required=True, alias=alias)
-                    ax_request.add(attr_info)
-                request.addExtension(ax_request)
-
-                #trust_root = self._get_trust_root(req)
-                #if self.absolute_trust_root:
-                    #trust_root += '/'
-                #else:
-                    #trust_root += req.href()
-                #return_to = self._get_trust_root(req) + req.href.openidprocess()
-                if request.shouldSendRedirect():
-                    redirect_url = request.redirectURL(
-                        trust_root, return_to, immediate=immediate)
-                    self.env.log.debug('Redirecting to: %s' % redirect_url)
-                    req.redirect(redirect_url)
-                else:
-                    form_html = request.formMarkup(
-                        form_tag_attrs={'id':'openid_message'},
-                        immediate=immediate)
-
-                    return 'autosubmitform.html', {
-                        'id': 'openid_message',
-                        'form': form_html
-                       }, None
-
-
         else:
          # OpenID 2.0
-
-         self.oidc = False
+	 
+	 # Differentiate oid2 and oidc - not currently used 
+         #self.oidc = False
 
          db = self.env.get_db_cnx()
          oidconsumer, oidsession = self._get_consumer(req, db)
@@ -670,11 +590,6 @@ class AuthOpenIdPlugin(Component):
                 # Here we find out the identity server that will verify the
                 # user's identity, and get a token that allows us to
                 # communicate securely with the identity server.
-
-		# Need to differentiate oid2 and oidc in here. 
-		# Oidc needs registration information - just hardcode for google now.
-
-                self.env.log.debug('openid_url: %s' % openid_url)
 
                 requested_policies = []
                 if self.pape_method:
@@ -774,10 +689,9 @@ class AuthOpenIdPlugin(Component):
         return rows[0][0]
 
     def _do_oidcprocess(self, req):
-        self.env.log.debug('JC starting do_oidcprocess')
-        self.env.log.debug('JC req.args %s' % req.args )
-        """Handle the redirect from the OpenID server.
+        """Handle the redirect from the Google OpenID Connect server.
         """
+        self.env.log.debug('JC starting do_process for Google OpenID Connect: req.args %s' % req.args )
         db = self.env.get_db_cnx()
         oidconsumer, oidsession = self._get_consumer(req, db)
 
@@ -798,6 +712,7 @@ class AuthOpenIdPlugin(Component):
 	c.store_registration_info(c.registration_response)
 	c.client_info = oidsession["saved_client_info"]
 	c.keyjar = oidsession["saved_keyjar"]
+	c.redirect_uris = oidsession['saved_redirect_uris']
 
         self.env.log.debug('JC keyjar after redirect issuers %s.' % c.keyjar.issuer_keys)
 	c.token_endpoint = "https://www.googleapis.com/oauth2/v3/token"
@@ -811,7 +726,7 @@ class AuthOpenIdPlugin(Component):
 
 	args = {
     		"code": aresp["code"],
-    		"redirect_uri": 'http://ticket.cigas.net/trac2/openidconnectprocess',
+    		"redirect_uri":  c.redirect_uris[0],
     		"client_id": c.client_id,
     		"client_secret": c.client_secret,
 		"grant_type" : "authorization_code"
@@ -1024,8 +939,6 @@ class AuthOpenIdPlugin(Component):
 
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
-	#add_script(req, 'https://apis.google.com/js/client:platform.js')
-	add_script(req, 'authopenid/js/gwt-oauth2.js')
         return 'openidlogin.html', {
             'images': req.href.chrome('authopenid/images') + '/',
             'action': req.href.openidverify(),
@@ -1043,80 +956,19 @@ class AuthOpenIdPlugin(Component):
 
 
     def _do_process(self, req):
-        self.env.log.debug('JC starting do_process')
-        self.env.log.debug('JC req.args %s' % req.args )
-        """Handle the redirect from the OpenID server.
+        """Handle the redirect from the OpenID 2.0 server.
         """
+        self.env.log.debug('JC starting do_process for OpenID 2.0: req.args %s' % req.args )
+
         db = self.env.get_db_cnx()
         oidconsumer, oidsession = self._get_consumer(req, db)
 
-
-	## How to get actual result now???
-	## req.args has the response, but
-	## How to get copy of client - it's not oidconsumer
-	from oic.oic.message import AuthorizationResponse
-	##aresp = oidconsumer.parse_response(AuthorizationResponse, info=req.args, sformat="urlencoded")
-
-	### Can't do this for OpenID2.0 !?!?!
-	## Still have to populate this...
-	##c = Client()
-	c = Client(client_authn_method=CLIENT_AUTHN_METHOD)
-	###c = oidsession["saved_client"]
-
-        self.env.log.debug('JC keyjar after redirect issuers %s.' % c.keyjar.issuer_keys)
-	if self.oidc:
-		c.provider_info = oidsession["saved_prov_info"] 
-		c.registration_response = oidsession["saved_reg_resp"]
-		c.store_registration_info(c.registration_response)
-		c.client_info = oidsession["saved_client_info"]
-		c.keyjar = oidsession["saved_keyjar"]
-		c.token_endpoint = "https://www.googleapis.com/oauth2/v3/token"
-
-		aresp = c.parse_response(AuthorizationResponse, info=json.dumps(req.args), sformat="json")
-        	self.env.log.debug('JC aresp %s' % aresp )
-        	self.env.log.debug('JC aresp[code] %s' % aresp['code'] )
-        	self.env.log.debug('JC aresp[state] %s' % aresp['state'] )
-		assert aresp['state'] == oidsession['state']
-
-
-		args = {
-    			"code": aresp["code"],
-    			"redirect_uri": 'http://ticket.cigas.net/trac2/openidprocess',
-    			"client_id": c.client_id,
-    			"client_secret": c.client_secret,
-			"grant_type" : "authorization_code"
-		}
-        	pcr = None
-        	r = c.http_request('https://www.googleapis.com/oauth2/v2/certs')
-        	self.env.log.debug('JC r %s' % r )
-        	self.env.log.debug('JC r.status %s   r.text %s' % (r.status_code, r.text) )
-        	if r.status_code == 200:
-            		##pcr = c.response_cls().from_json(r.text)
-			pcr = json.loads(r.text)
-        	self.env.log.debug('JC pcr %s' % pcr )
-		
-		info = c.do_access_token_request(scope=["openid","email"],
-                                      state=aresp["state"],
-                                      request_args=args,
-                                      authn_method="client_secret_post"
-		## Put kwargs with key= or keys, get keys from google
-                                      )
-                                      ##authn_method="client_secret_post"
-        	self.env.log.debug('JC info %s' % info )
-		c.userinfo_endpoint = "https://www.googleapis.com/oauth2/v3/userinfo"
-                ##user_info=c.do_user_info_request(state=aresp["state"])
-		## It was REALLY important to specify GET
-                user_info=c.do_user_info_request(state=aresp["state"], scope=["openid","email"],method="GET")
-        	self.env.log.debug('JC user_info %s' % user_info )
-               
-	else:
         # Ask the library to check the response that the server sent
         # us.  Status is a code indicating the response type. info is
         # either None or a string containing more information about
         # the return type.
-        	current_url = req.abs_href(req.path_info)
-		## This is the call for OpenID 2.0 - 
-        	info = oidconsumer.complete(req.args,current_url)
+       	current_url = req.abs_href(req.path_info)
+       	info = oidconsumer.complete(req.args,current_url)
 
         css_class = 'error'
         if info.status == consumer.FAILURE and info.identity_url:
@@ -1347,8 +1199,6 @@ class AuthOpenIdPlugin(Component):
 
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
-	#add_script(req, 'https://apis.google.com/js/client:platform.js')
-	add_script(req, 'authopenid/js/gwt-oauth2.js')
         return 'openidlogin.html', {
             'images': req.href.chrome('authopenid/images') + '/',
             'action': req.href.openidverify(),

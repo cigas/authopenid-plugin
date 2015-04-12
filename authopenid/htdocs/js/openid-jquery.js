@@ -5,14 +5,16 @@ http://code.google.com/p/openid-selector/
 This code is licenced under the New BSD License.
 */
 
-var providers_large = {
+/*
     google: {
         name: 'Google',
         url: 'https://www.google.com/accounts/o8/id'
     },
-    google2: {
-        name: 'Google2',
-        url: 'https://accounts.google.com/o/oauth2/auth'
+*/
+var providers_large = {
+    google: {
+        name: 'Google',
+        url: 'https://accounts.google.com'
     },
     yahoo: {
         name: 'Yahoo',

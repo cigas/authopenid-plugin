@@ -374,20 +374,23 @@ class AuthOpenIdPlugin(Component):
            return self._do_verify(req)
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
-        return 'openidlogin.html', {
-            'images': req.href.chrome('authopenid/images') + '/',
-            'action': req.href.openidverify(),
-            'message': 'Login using OpenID. Google has switched to OpenID Connect. If that option does not work, use Yahoo instead and file a meaningful ticket to help us fix it.',
-            'signup': self.signup_link,
-            'whatis': self.whatis_link,
-            'css_class': 'error',
-            'providers_regexp': self.providers_regexp,
-            'custom_provider_name': self.custom_provider_name,
-            'custom_provider_label': self.custom_provider_label,
-            'custom_provider_url': self.custom_provider_url,
-            'custom_provider_image': self.custom_provider_image,
-            'custom_provider_size': self.custom_provider_size,
-            }, None
+	return self.make_login_page(req, 'Login using OpenID. Google has switched to OpenID Connect. If that option does not work, use Yahoo instead and file a meaningful ticket to help us fix it.')
+
+
+#        return 'openidlogin.html', {
+#            'images': req.href.chrome('authopenid/images') + '/',
+#            'action': req.href.openidverify(),
+#            'message': 'Login using OpenID. Google has switched to OpenID Connect. If that option does not work, use Yahoo instead and file a meaningful ticket to help us fix it.',
+#            'signup': self.signup_link,
+#            'whatis': self.whatis_link,
+#            'css_class': 'error',
+#            'providers_regexp': self.providers_regexp,
+#            'custom_provider_name': self.custom_provider_name,
+#            'custom_provider_label': self.custom_provider_label,
+#            'custom_provider_url': self.custom_provider_url,
+#            'custom_provider_image': self.custom_provider_image,
+#            'custom_provider_size': self.custom_provider_size,
+#            }, None
 
     def _get_oidsession(self, req):
         """Returns a session dict that can store any kind of object."""
@@ -427,6 +430,24 @@ class AuthOpenIdPlugin(Component):
         	##return consumer.Consumer(s, store), s
         return consumer.Consumer(s, store), s
 
+    def make_login_page(self, req, msg):
+
+	# Note that css_class is currently not defined in the css file :(
+       return 'openidlogin.html', {
+                    'images': req.href.chrome('authopenid/images') + '/',
+                    'action': req.href.openidverify(),
+                    'message': msg,
+                    'signup': self.signup_link,
+                    'whatis': self.whatis_link,
+                    'css_class': 'error',
+                    'providers_regexp': self.providers_regexp,
+                    'custom_provider_name': self.custom_provider_name,
+                    'custom_provider_label': self.custom_provider_label,
+                    'custom_provider_url': self.custom_provider_url,
+                    'custom_provider_image': self.custom_provider_image,
+                    'custom_provider_size': self.custom_provider_size,
+                   }, None
+
     def _do_verify(self, req):
         """Process the form submission, initating OpenID verification.
         """
@@ -437,20 +458,22 @@ class AuthOpenIdPlugin(Component):
         add_script(req, 'authopenid/js/openid-jquery.js')
 
         if not openid_url:
-            return 'openidlogin.html', {
-                'images': req.href.chrome('authopenid/images') + '/',
-                'action': req.href.openidverify(),
-                'message': 'Enter an OpenID Identifier to verify.',
-                'signup': self.signup_link,
-                'whatis': self.whatis_link,
-                'css_class': 'error',
-                'providers_regexp': self.providers_regexp,
-                'custom_provider_name': self.custom_provider_name,
-                'custom_provider_label': self.custom_provider_label,
-                'custom_provider_url': self.custom_provider_url,
-                'custom_provider_image': self.custom_provider_image,
-                'custom_provider_size': self.custom_provider_size,
-                }, None
+	    return self.make_login_page(req, 'Enter an OpenID Identifier to verify.')
+
+#            return 'openidlogin.html', {
+#                'images': req.href.chrome('authopenid/images') + '/',
+#                'action': req.href.openidverify(),
+#                'message': 'Enter an OpenID Identifier to verify.',
+#                'signup': self.signup_link,
+#                'whatis': self.whatis_link,
+#                'css_class': 'error',
+#                'providers_regexp': self.providers_regexp,
+#                'custom_provider_name': self.custom_provider_name,
+#                'custom_provider_label': self.custom_provider_label,
+#                'custom_provider_url': self.custom_provider_url,
+#                'custom_provider_image': self.custom_provider_image,
+#                'custom_provider_size': self.custom_provider_size,
+#                }, None
 
         immediate = 'immediate' in req.args
         if openid_url == 'https://accounts.google.com' :
@@ -488,10 +511,26 @@ class AuthOpenIdPlugin(Component):
 
 
 
+
+		# Check for google configuration settings
+		try:
+		   if not self.google_client_id:
+	            	raise ValueError("No Google client_id configured")
+
+		   if not self.google_client_secret:
+	            	raise ValueError("No Google client_secret configured")
+
+		except ValueError, err:
+		   # Could/should make this block larger to encompass all error conditions for this section
+                   msg = ('%s' % err)
+		   return self.make_login_page(req, msg)
+
 		# Not sure which fields are necessary, just set them all for now.
 		info = {}
-		info['client_id'] = self.google_client_id
+		self.env.log.debug('google_client_id: %s' % self.google_client_id)
+		info['client_id'] = self.google_client_id 
 		info['client_secret'] = self.google_client_secret
+
 		client_reg = RegistrationResponse(**info)
 		c.client_info = client_reg
 		## calling c.store_registration() sets c.client_id and c.client_secret
@@ -552,38 +591,42 @@ class AuthOpenIdPlugin(Component):
          except consumer.DiscoveryFailure, exc:
             fetch_error_string = 'Error in discovery: %s' % (
                 cgi.escape(str(exc[0])))
-            return 'openidlogin.html', {
-                'images': req.href.chrome('authopenid/images') + '/',
-                'action': req.href.openidverify(),
-                'message': fetch_error_string,
-                'signup': self.signup_link,
-                'whatis': self.whatis_link,
-                'css_class': 'error',
-                'providers_regexp': self.providers_regexp,
-                'custom_provider_name': self.custom_provider_name,
-                'custom_provider_label': self.custom_provider_label,
-                'custom_provider_url': self.custom_provider_url,
-                'custom_provider_image': self.custom_provider_image,
-                'custom_provider_size': self.custom_provider_size,
-                }, None
+	    return self.make_login_page(req, fetch_error_string)
+
+#            return 'openidlogin.html', {
+#                'images': req.href.chrome('authopenid/images') + '/',
+#                'action': req.href.openidverify(),
+#                'message': fetch_error_string,
+#                'signup': self.signup_link,
+#                'whatis': self.whatis_link,
+#                'css_class': 'error',
+#                'providers_regexp': self.providers_regexp,
+#                'custom_provider_name': self.custom_provider_name,
+#                'custom_provider_label': self.custom_provider_label,
+#                'custom_provider_url': self.custom_provider_url,
+#                'custom_provider_image': self.custom_provider_image,
+#                'custom_provider_size': self.custom_provider_size,
+#                }, None
          else:
             if request is None:
                 msg = 'No OpenID services found for <code>%s</code>' % (
                     cgi.escape(openid_url),)
-                return 'openidlogin.html', {
-                    'images': req.href.chrome('authopenid/images') + '/',
-                    'action': req.href.openidverify(),
-                    'message': msg,
-                    'signup': self.signup_link,
-                    'whatis': self.whatis_link,
-                    'css_class': 'error',
-                    'providers_regexp': self.providers_regexp,
-                    'custom_provider_name': self.custom_provider_name,
-                    'custom_provider_label': self.custom_provider_label,
-                    'custom_provider_url': self.custom_provider_url,
-                    'custom_provider_image': self.custom_provider_image,
-                    'custom_provider_size': self.custom_provider_size,
-                   }, None
+		return self.make_login_page(req, msg)
+
+#                return 'openidlogin.html', {
+#                    'images': req.href.chrome('authopenid/images') + '/',
+#                    'action': req.href.openidverify(),
+#                    'message': msg,
+#                    'signup': self.signup_link,
+#                    'whatis': self.whatis_link,
+#                    'css_class': 'error',
+#                    'providers_regexp': self.providers_regexp,
+#                    'custom_provider_name': self.custom_provider_name,
+#                    'custom_provider_label': self.custom_provider_label,
+#                    'custom_provider_url': self.custom_provider_url,
+#                    'custom_provider_image': self.custom_provider_image,
+#                    'custom_provider_size': self.custom_provider_size,
+#                  }, None
             else:
                 self._commit_oidsession(oidsession, req)
                 # Then, ask the library to begin the authorization.

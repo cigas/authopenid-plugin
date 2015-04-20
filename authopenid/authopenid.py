@@ -65,6 +65,7 @@ except ImportError:
 from oic.oic import Client
 from oic.utils.authn.client import CLIENT_AUTHN_METHOD
 from oic.oic.message import RegistrationResponse
+from oic.oic.message import AuthorizationResponse
 import hashlib
 import hmac
 from oic.oauth2 import rndstr
@@ -232,7 +233,8 @@ class AuthOpenIdPlugin(Component):
     google_client_secret = Option('openid', 'google_client_secret',  '',
             """ Google client secret from developers console. """)
 
-
+    google_scope = Option('openid', 'google_scope', 'openid, email',
+            """Comma separated list of google OpenID scope parameters [openid, email, profile].""")
 
     def _get_masked_address(self, address):
         if self.check_ip:
@@ -374,7 +376,7 @@ class AuthOpenIdPlugin(Component):
            return self._do_verify(req)
         add_stylesheet(req, 'authopenid/css/openid.css')
         add_script(req, 'authopenid/js/openid-jquery.js')
-	return self.make_login_page(req, 'Login using OpenID. Google has switched to OpenID Connect. If that option does not work, use Yahoo instead and file a meaningful ticket to help us fix it.')
+	return self._make_login_page(req, 'Login using OpenID. Google has switched to OpenID Connect. If that option does not work, use Yahoo instead and file a meaningful ticket to help us fix it.', css='alert')
 
 
 #        return 'openidlogin.html', {
@@ -430,7 +432,7 @@ class AuthOpenIdPlugin(Component):
         	##return consumer.Consumer(s, store), s
         return consumer.Consumer(s, store), s
 
-    def make_login_page(self, req, msg):
+    def _make_login_page(self, req, msg, css='error'):
 
 	# Note that css_class is currently not defined in the css file :(
        return 'openidlogin.html', {
@@ -439,7 +441,7 @@ class AuthOpenIdPlugin(Component):
                     'message': msg,
                     'signup': self.signup_link,
                     'whatis': self.whatis_link,
-                    'css_class': 'error',
+                    'css_class': css,
                     'providers_regexp': self.providers_regexp,
                     'custom_provider_name': self.custom_provider_name,
                     'custom_provider_label': self.custom_provider_label,
@@ -458,7 +460,7 @@ class AuthOpenIdPlugin(Component):
         add_script(req, 'authopenid/js/openid-jquery.js')
 
         if not openid_url:
-	    return self.make_login_page(req, 'Enter an OpenID Identifier to verify.')
+	    return self._make_login_page(req, 'Enter an OpenID Identifier to verify.')
 
 #            return 'openidlogin.html', {
 #                'images': req.href.chrome('authopenid/images') + '/',
@@ -497,7 +499,7 @@ class AuthOpenIdPlugin(Component):
 
 
 
-		## Google doesn't support webfinger - just use 
+		## Google doesn't support webfinger 
 		##uid = 'billgates@gmail.com'
 		##issuer = c.discover(uid)
 
@@ -519,11 +521,18 @@ class AuthOpenIdPlugin(Component):
 
 		   if not self.google_client_secret:
 	            	raise ValueError("No Google client_secret configured")
+    		   
+
+
+		   #if not self.google_scope:
+			## Note - has to be a string to match configuration args
+		        #self.google_scope = 'openid, email'
+
 
 		except ValueError, err:
 		   # Could/should make this block larger to encompass all error conditions for this section
                    msg = ('%s' % err)
-		   return self.make_login_page(req, msg)
+		   return self._make_login_page(req, msg)
 
 		# Not sure which fields are necessary, just set them all for now.
 		info = {}
@@ -544,11 +553,13 @@ class AuthOpenIdPlugin(Component):
                     trust_root += req.href()
 		c.redirect_uris = [self._get_trust_root(req) + req.href.openidconnectprocess()]
 
+                self.env.log.debug('JC google_scope: %s' % self.google_scope)
+
 		oidsession["state"] = rndstr()
 		args = {
 			"client_id" : c.client_info['client_id'],
 			"response_type" : "code",
-			"scope" : ["openid", "email"],
+			"scope" : self.google_scope.split(','),
 			"redirect_uri" : c.redirect_uris[0]
 		}
 
@@ -564,7 +575,7 @@ class AuthOpenIdPlugin(Component):
 
 		# It would be nice to just say
 		#   oidsession['saved_client'] = c
-		# but this generate 'TypeError: can't pickle lock objects'
+		# but this generates 'TypeError: can't pickle lock objects'
 		oidsession["saved_prov_info"] = c.provider_info
 		oidsession["saved_reg_resp"] = c.registration_response
 		oidsession["saved_client_info"] = c.client_info
@@ -591,7 +602,7 @@ class AuthOpenIdPlugin(Component):
          except consumer.DiscoveryFailure, exc:
             fetch_error_string = 'Error in discovery: %s' % (
                 cgi.escape(str(exc[0])))
-	    return self.make_login_page(req, fetch_error_string)
+	    return self._make_login_page(req, fetch_error_string)
 
 #            return 'openidlogin.html', {
 #                'images': req.href.chrome('authopenid/images') + '/',
@@ -611,7 +622,7 @@ class AuthOpenIdPlugin(Component):
             if request is None:
                 msg = 'No OpenID services found for <code>%s</code>' % (
                     cgi.escape(openid_url),)
-		return self.make_login_page(req, msg)
+		return self._make_login_page(req, msg)
 
 #                return 'openidlogin.html', {
 #                    'images': req.href.chrome('authopenid/images') + '/',
@@ -738,32 +749,25 @@ class AuthOpenIdPlugin(Component):
         db = self.env.get_db_cnx()
         oidconsumer, oidsession = self._get_consumer(req, db)
 
-
-	## How to get actual result now???
-	## req.args has the response, but
-	## How to get copy of client - it's not oidconsumer
-	from oic.oic.message import AuthorizationResponse
-	##aresp = oidconsumer.parse_response(AuthorizationResponse, info=req.args, sformat="urlencoded")
-
-	### Can't do this for OpenID2.0 !?!?!
-	## Still have to populate this...
 	##c = Client()
-	c = Client(client_authn_method=CLIENT_AUTHN_METHOD)
+	## Can't do this since a Client has locked objects (loggers??), so it never get saved
 	###c = oidsession["saved_client"]
+
+	# Create a new Client and restore its previous state
+	c = Client(client_authn_method=CLIENT_AUTHN_METHOD)
 	c.provider_info = oidsession["saved_prov_info"] 
 	c.registration_response = oidsession["saved_reg_resp"]
 	c.store_registration_info(c.registration_response)
 	c.client_info = oidsession["saved_client_info"]
 	c.keyjar = oidsession["saved_keyjar"]
 	c.redirect_uris = oidsession['saved_redirect_uris']
+	c.token_endpoint = c.provider_info['token_endpoint']
 
-        self.env.log.debug('JC keyjar after redirect issuers %s.' % c.keyjar.issuer_keys)
-	c.token_endpoint = "https://www.googleapis.com/oauth2/v3/token"
 
+	# Validate the response
+	# This is a bit of a kludge. c.parse_response wants the response in JSON format, but that's not how
+	#  we get it back from Google, so we just re-encode it ourselves. It's a waste, but it works.
 	aresp = c.parse_response(AuthorizationResponse, info=json.dumps(req.args), sformat="json")
-       	self.env.log.debug('JC aresp %s' % aresp )
-       	self.env.log.debug('JC aresp[code] %s' % aresp['code'] )
-       	self.env.log.debug('JC aresp[state] %s' % aresp['state'] )
 	assert aresp['state'] == oidsession['state']
 
 
@@ -774,27 +778,20 @@ class AuthOpenIdPlugin(Component):
     		"client_secret": c.client_secret,
 		"grant_type" : "authorization_code"
 		}
-        ###pcr = None
-       	###r = c.http_request('https://www.googleapis.com/oauth2/v2/certs')
-       	###self.env.log.debug('JC r %s' % r )
-       	###self.env.log.debug('JC r.status %s   r.text %s' % (r.status_code, r.text) )
-       	###if r.status_code == 200:
-       		#####pcr = c.response_cls().from_json(r.text)
-		###pcr = json.loads(r.text)
-       	###self.env.log.debug('JC pcr %s' % pcr )
-		
-	info = c.do_access_token_request(scope=["openid","email"],
+	
+	info = c.do_access_token_request(scope=self.google_scope.split(','),
                                      state=aresp["state"],
                                      request_args=args,
                                      authn_method="client_secret_post"
-		## Put kwargs with key= or keys, get keys from google
                                       )
-                                      ##authn_method="client_secret_post"
+
        	self.env.log.debug('JC info %s' % info )
-	c.userinfo_endpoint = "https://www.googleapis.com/oauth2/v3/userinfo"
+#	c.userinfo_endpoint = "https://www.googleapis.com/oauth2/v3/userinfo"
+	c.userinfo_endpoint = c.provider_info['userinfo_endpoint']
+
                 ##user_info=c.do_user_info_request(state=aresp["state"])
 		## It was REALLY important to specify GET
-        user_info=c.do_user_info_request(state=aresp["state"], scope=["openid","email"],method="GET")
+        user_info=c.do_user_info_request(state=aresp["state"], scope=self.google_scope.split(','),method="GET")
        	self.env.log.debug('JC user_info %s' % user_info )
                
 ## OpenID 2.0 code below - have to delete and fix

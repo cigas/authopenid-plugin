@@ -1,3 +1,14 @@
+.alert {
+	size: 14pt;
+	font-weight: bold;
+	font-family: serif;
+}
+
+.error {
+	size: 14pt;
+	color: red;
+}
+
 #openid_form {
 	width: 470px;	
 }

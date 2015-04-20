@@ -257,6 +257,8 @@ from an example config file which lists all available options::
     #  http://yourdomain/tracpath/openidconnectprocess
     #google_client_id =
     #google_client_secret = 
+    # Define Google scope of information required. Must contain openid. Default is email.
+    #google_scope = openid, email
 
 
     # Authentication cookie controls.

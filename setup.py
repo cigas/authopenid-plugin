@@ -21,7 +21,7 @@ if sys.version_info[:2] < (2,6):
 setup(
     name=PACKAGE,
     version=VERSION,
-    description='OpenID plugin for Trac',
+    description='OpenID plugin for Trac w/support for Google\'s OpenID Connect',
     long_description=README + "\n\n" + CHANGES,
     platforms = ['Any'],
     classifiers=[

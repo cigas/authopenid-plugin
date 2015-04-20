@@ -434,7 +434,9 @@ class AuthOpenIdPlugin(Component):
 
     def _make_login_page(self, req, msg, css='error'):
 
-	# Note that css_class is currently not defined in the css file :(
+       add_stylesheet(req, 'authopenid/css/openid.css')
+       add_script(req, 'authopenid/js/openid-jquery.js')
+
        return 'openidlogin.html', {
                     'images': req.href.chrome('authopenid/images') + '/',
                     'action': req.href.openidverify(),
@@ -745,7 +747,7 @@ class AuthOpenIdPlugin(Component):
     def _do_oidcprocess(self, req):
         """Handle the redirect from the Google OpenID Connect server.
         """
-        self.env.log.debug('JC starting do_process for Google OpenID Connect: req.args %s' % req.args )
+        self.env.log.debug('JC starting do_oidcprocess for Google OpenID Connect: req.args %s' % req.args )
         db = self.env.get_db_cnx()
         oidconsumer, oidsession = self._get_consumer(req, db)
 
@@ -768,8 +770,14 @@ class AuthOpenIdPlugin(Component):
 	# This is a bit of a kludge. c.parse_response wants the response in JSON format, but that's not how
 	#  we get it back from Google, so we just re-encode it ourselves. It's a waste, but it works.
 	aresp = c.parse_response(AuthorizationResponse, info=json.dumps(req.args), sformat="json")
-	assert aresp['state'] == oidsession['state']
 
+	## Need to check for errors here. If user cancels, then there is no aresp['code'] and probably not ['state'] either.
+        self.env.log.debug('JC aresp %s' % aresp )
+	if 'error' in aresp:
+	    self.env.log.debug('JC - Validation error')
+	    return self._make_login_page(req, ("Error: %s" % aresp['error']))
+
+	assert aresp['state'] == oidsession['state']
 
 	args = {
     		"code": aresp["code"],
@@ -786,11 +794,9 @@ class AuthOpenIdPlugin(Component):
                                       )
 
        	self.env.log.debug('JC info %s' % info )
-#	c.userinfo_endpoint = "https://www.googleapis.com/oauth2/v3/userinfo"
-	c.userinfo_endpoint = c.provider_info['userinfo_endpoint']
 
-                ##user_info=c.do_user_info_request(state=aresp["state"])
-		## It was REALLY important to specify GET
+	c.userinfo_endpoint = c.provider_info['userinfo_endpoint']
+	## It was REALLY important to specify GET
         user_info=c.do_user_info_request(state=aresp["state"], scope=self.google_scope.split(','),method="GET")
        	self.env.log.debug('JC user_info %s' % user_info )
                
@@ -842,8 +848,19 @@ class AuthOpenIdPlugin(Component):
             ##email = (ax_info.get('email')
                      ##or ax_info.get('email2')
                      ##or sreg_info.get('email'))
-	    email = user_info["email"]
-	    fullname = user_info["name"]
+
+
+	    # This really shouldn't happen, at least from Google
+	    if 'email' in user_info:	    
+		email = user_info['email']
+	    else:
+		return self._make_login_page(req, "Error: No email address specified by Google")
+
+	    # name is only returned when user has a Google+ profile
+	    if 'name' in user_info:
+		fullname = user_info['name']
+	    else:
+		fullname = email
 
             ##fullname = (
                 ##' '.join(filter(None, map(ax_info.get,
